@@ -1,0 +1,46 @@
+name: Track SHIN EI MARU (IMO 9866512)
+
+on:
+  schedule:
+    # 毎時0分 (UTC) = 1時間ごとに自動実行
+    - cron: "0 * * * *"
+  workflow_dispatch: # GitHub画面から手動でテスト実行も可能にする
+
+permissions:
+  contents: write
+
+jobs:
+  fetch-and-save:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 pandas
+
+      - name: Fetch vessel position and update CSV
+        run: |
+          if [ -f "fetch_shin_ei_maru.py" ]; then
+            python fetch_shin_ei_maru.py
+          elif [ -f "SampleData/FREA_LiDAR/fetch_shin_ei_maru.py" ]; then
+            python SampleData/FREA_LiDAR/fetch_shin_ei_maru.py
+          fi
+
+      - name: Commit and push updated CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "*SHIN_EI_MARU_track.csv"
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update SHIN EI MARU track ($(date -u +'%Y-%m-%d %H:%M UTC'))"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi

@@ -1,0 +1,14 @@
+# 仮想環境・キャッシュ
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+
+# 大容量データファイル・生データ（GitHubの100MB制限回避）
+*.pkl
+*.rtd
+*.sta
+WLS71045_rtd_files/
+WLS71045_sta_files/
+
+# 新栄丸の航跡CSVは追跡対象として明示的に許可
+!SHIN_EI_MARU_track.csv
