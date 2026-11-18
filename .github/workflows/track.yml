@@ -1,0 +1,44 @@
+name: Track SHIN EI MARU
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: track-vessel
+  cancel-in-progress: false
+
+jobs:
+  fetch-position:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 pandas
+
+      - name: Fetch vessel position
+        run: python fetch_shin_ei_maru.py --once
+
+      - name: Commit and push CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add SHIN_EI_MARU_track.csv
+          if ! git diff --cached --quiet; then
+            git commit -m "Update SHIN_EI_MARU_track.csv"
+            git push
+          else
+            echo "No changes to commit."
+          fi

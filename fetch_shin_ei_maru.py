@@ -2,6 +2,7 @@ import os
 import re
 import json
 import time
+import argparse
 from datetime import datetime, timezone, timedelta
 import requests
 from bs4 import BeautifulSoup
@@ -11,7 +12,8 @@ import pandas as pd
 IMO = "9866512"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(BASE_DIR, "SHIN_EI_MARU_track.csv")
-ONLY_SAVE_ON_UPDATE = False  # False: 1時間ごとに毎回記録 / True: 前回と同一座標・AIS時刻ならスキップ
+INTERVAL_SECONDS = 10 * 60  # 取得間隔（秒）: 10分ごと
+ONLY_SAVE_ON_UPDATE = False  # False: 指定間隔ごとに毎回記録 / True: 前回と同一座標・AIS時刻ならスキップ
 
 JST = timezone(timedelta(hours=9))
 
@@ -155,12 +157,62 @@ def append_to_csv(record: dict, csv_path: str = CSV_PATH, only_on_update: bool =
     return True
 
 
-if __name__ == "__main__":
+def fetch_and_save_once() -> None:
+    """
+    1回分の位置情報を取得し、CSVに追記して結果を出力する。
+    """
     record = fetch_vessel_position(IMO)
     saved = append_to_csv(record, CSV_PATH, only_on_update=ONLY_SAVE_ON_UPDATE)
     status = "Saved" if saved else "Skipped (no update)"
     print(
         f"[{record['fetched_at_jst']}] {status} | "
         f"Lat: {record['latitude']}, Lon: {record['longitude']}, "
-        f"SOG: {record['sog_kn']} kn, COG: {record['cog_deg']} deg"
+        f"SOG: {record['sog_kn']} kn, COG: {record['cog_deg']} deg",
+        flush=True,
     )
+
+
+def run_periodic(interval_sec: int = INTERVAL_SECONDS) -> None:
+    """
+    指定間隔（デフォルト10分）ごとに位置情報を取得し、CSVへ追記し続ける。
+    """
+    print(
+        f"Tracking started (IMO: {IMO}, interval: {interval_sec}s, csv: {CSV_PATH}). "
+        "Press Ctrl+C to stop.",
+        flush=True,
+    )
+    try:
+        while True:
+            started_at = time.monotonic()
+            try:
+                fetch_and_save_once()
+            except Exception as e:
+                now_jst = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+                print(f"[{now_jst}] [Error] {e}", flush=True)
+
+            elapsed = time.monotonic() - started_at
+            sleep_sec = max(0.0, interval_sec - elapsed)
+            time.sleep(sleep_sec)
+    except KeyboardInterrupt:
+        print("\nTracking stopped.", flush=True)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="VesselFinder から船舶位置を取得して CSV に記録する")
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="1回だけ取得して終了する",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=INTERVAL_SECONDS,
+        help=f"取得間隔（秒）。デフォルトは {INTERVAL_SECONDS} 秒（10分）",
+    )
+    args = parser.parse_args()
+
+    if args.once:
+        fetch_and_save_once()
+    else:
+        run_periodic(interval_sec=args.interval)
