@@ -1,12 +1,22 @@
 import os
+import json
 import math
+import tempfile
 import argparse
+import requests
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon
+from matplotlib.collections import PatchCollection
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CSV_PATH = os.path.join(BASE_DIR, "SHIN_EI_MARU_track.csv")
 DEFAULT_OUT_PATH = os.path.join(BASE_DIR, "SHIN_EI_MARU_track.png")
+
+JAPAN_GEOJSON_URL = (
+    "https://raw.githubusercontent.com/dataofjapan/land/master/japan.geojson"
+)
+JAPAN_GEOJSON_CACHE = os.path.join(tempfile.gettempdir(), "shin_ei_maru_jpn_detailed.geojson")
 
 
 def load_track(csv_path: str) -> pd.DataFrame:
@@ -22,9 +32,6 @@ def load_track(csv_path: str) -> pd.DataFrame:
 
     df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
     df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
-    if "sog_kn" in df.columns:
-        df["sog_kn"] = pd.to_numeric(df["sog_kn"], errors="coerce")
-
     df = df.dropna(subset=["latitude", "longitude"]).copy()
     if df.empty:
         return df
@@ -36,9 +43,50 @@ def load_track(csv_path: str) -> pd.DataFrame:
     return df
 
 
+def load_japan_polygons() -> list[Polygon]:
+    """
+    簡易的な日本地図のポリゴン（GeoJSON）を取得・キャッシュして matplotlib の Polygon リストを返す。
+    """
+    geojson_data = None
+    if os.path.exists(JAPAN_GEOJSON_CACHE):
+        try:
+            with open(JAPAN_GEOJSON_CACHE, "r", encoding="utf-8") as f:
+                geojson_data = json.load(f)
+        except Exception:
+            geojson_data = None
+
+    if geojson_data is None:
+        try:
+            resp = requests.get(JAPAN_GEOJSON_URL, timeout=15)
+            resp.raise_for_status()
+            geojson_data = resp.json()
+            with open(JAPAN_GEOJSON_CACHE, "w", encoding="utf-8") as f:
+                json.dump(geojson_data, f)
+        except Exception as e:
+            print(f"[Warn] 日本地図データの取得に失敗しました（航路のみ描画します）: {e}")
+            return []
+
+    polygons: list[Polygon] = []
+    features = geojson_data.get("features", [])
+    for feat in features:
+        geom = feat.get("geometry") or {}
+        gtype = geom.get("type")
+        coords = geom.get("coordinates") or []
+
+        if gtype == "Polygon":
+            if coords:
+                polygons.append(Polygon(coords[0], closed=True))
+        elif gtype == "MultiPolygon":
+            for poly_coords in coords:
+                if poly_coords:
+                    polygons.append(Polygon(poly_coords[0], closed=True))
+
+    return polygons
+
+
 def plot_track(csv_path: str, out_path: str, show: bool = True) -> None:
     """
-    航路を matplotlib で描画し、画像として保存する。
+    日本地図を背景に、航路の実線のみを matplotlib で描画して保存する。
     """
     df = load_track(csv_path)
     if df.empty:
@@ -49,48 +97,29 @@ def plot_track(csv_path: str, out_path: str, show: bool = True) -> None:
     lons = df["longitude"].to_numpy()
 
     fig, ax = plt.subplots(figsize=(9, 8), dpi=150)
+    ax.set_facecolor("#eef5fb")
 
-    # 航路の軌跡線
-    ax.plot(lons, lats, color="steelblue", linewidth=1.8, alpha=0.85, zorder=2, label="Track")
-
-    # 船速 (sog_kn) があれば色で表現、なければ単色でプロット
-    has_sog = "sog_kn" in df.columns and df["sog_kn"].notna().any()
-    if has_sog:
-        sc = ax.scatter(
-            lons,
-            lats,
-            c=df["sog_kn"],
-            cmap="viridis",
-            s=30,
-            zorder=3,
-            edgecolors="white",
-            linewidths=0.4,
+    # 背景の詳細日本地図（都道府県・海岸線）
+    japan_polys = load_japan_polygons()
+    if japan_polys:
+        pc = PatchCollection(
+            japan_polys,
+            facecolor="#eae6df",
+            edgecolor="#666666",
+            linewidth=0.5,
+            zorder=1,
         )
-        cbar = fig.colorbar(sc, ax=ax, pad=0.02, shrink=0.85)
-        cbar.set_label("SOG [kn]")
-    else:
-        ax.scatter(lons, lats, color="steelblue", s=25, zorder=3)
+        ax.add_collection(pc)
 
-    # 開始点・最新点のマーカー
-    ax.scatter(
-        lons[0],
-        lats[0],
-        color="limegreen",
-        edgecolors="black",
-        s=90,
-        marker="o",
-        zorder=4,
-        label=f"Start ({df['fetched_at_jst'].iloc[0]})" if "fetched_at_jst" in df.columns else "Start",
-    )
-    ax.scatter(
-        lons[-1],
-        lats[-1],
-        color="crimson",
-        edgecolors="black",
-        s=130,
-        marker="*",
-        zorder=5,
-        label=f"Latest ({df['fetched_at_jst'].iloc[-1]})" if "fetched_at_jst" in df.columns else "Latest",
+    # 航路の実線のみ描画
+    ax.plot(
+        lons,
+        lats,
+        color="tab:blue",
+        linewidth=2.0,
+        linestyle="-",
+        zorder=2,
+        label="Track",
     )
 
     # 緯度に応じた縦横比補正（経度1度と緯度1度の距離比）
@@ -101,8 +130,8 @@ def plot_track(csv_path: str, out_path: str, show: bool = True) -> None:
     # 表示範囲に余白を追加
     lon_span = float(lons.max() - lons.min())
     lat_span = float(lats.max() - lats.min())
-    pad_lon = max(lon_span * 0.12, 0.02)
-    pad_lat = max(lat_span * 0.12, 0.02)
+    pad_lon = max(lon_span * 0.15, 0.1)
+    pad_lat = max(lat_span * 0.15, 0.1)
     ax.set_xlim(float(lons.min()) - pad_lon, float(lons.max()) + pad_lon)
     ax.set_ylim(float(lats.min()) - pad_lat, float(lats.max()) + pad_lat)
 
@@ -111,7 +140,7 @@ def plot_track(csv_path: str, out_path: str, show: bool = True) -> None:
         if "ship_name" in df.columns and df["ship_name"].notna().any()
         else "SHIN EI MARU"
     )
-    ax.set_title(f"{ship_name} Track (n={len(df)})", fontsize=13, pad=10)
+    ax.set_title(f"{ship_name} Track", fontsize=13, pad=10)
     ax.set_xlabel("Longitude [deg]")
     ax.set_ylabel("Latitude [deg]")
     ax.grid(True, linestyle="--", alpha=0.5)
